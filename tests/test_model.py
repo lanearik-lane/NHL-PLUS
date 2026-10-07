@@ -93,3 +93,27 @@ def test_backtest_no_lookahead_and_metrics():
     assert m["games"] == 600
     assert m["brier"] < 0.25                         # learns team strength
     assert sum(c["games"] for c in M.calibration(rows)) == 600
+
+
+def test_grades():
+    assert M.grade(8) == "A+"
+    assert M.grade(5.2) == "A"
+    assert M.grade(2.1) == "B"
+    assert M.grade(0.2) is None
+    assert M.grade(8, penalties=1) == "A"
+    assert M.grade(1, penalties=3) == "C"            # never falls below C
+
+
+def test_est_line_and_prop_pick():
+    r = M.SOG_DISPERSION
+    assert M.est_line(1.4, r) == 1.5          # not a giveaway 0.5 line
+    assert M.est_line(3.0, r) == 2.5
+    assert 24.5 <= M.est_line(26.0, M.SAVES_DISPERSION) <= 26.5
+    # no matchup change -> model equals book before vig -> negative edge, no pick
+    side, line, p, pb = M.prop_pick(2.5, 2.5, r)
+    assert p < pb and M.grade((p - pb) * 100) is None
+    # big favourable matchup -> Over with positive edge
+    side, line, p, pb = M.prop_pick(2.5, 3.4, r)
+    assert side == "Over" and p > pb
+    side, line, p, pb = M.prop_pick(2.5, 1.8, r)
+    assert side == "Under" and p > pb

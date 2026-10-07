@@ -212,3 +212,43 @@ def calibration(rows: list[dict], bins: int = 10) -> list[dict]:
                     "actual": sum(r["home_win"] for r in rs) / len(rs),
                     "games": len(rs)})
     return out
+
+
+# ------------------------------------------------------------------ pick grading
+# A pick's edge is (model probability - break-even probability at the price), in points.
+GRADE_SCALE = [("A+", 7.0), ("A", 5.0), ("B+", 3.5), ("B", 2.0), ("C", 0.5)]
+GRADE_ORDER = {g: i for i, (g, _) in enumerate(GRADE_SCALE)}
+ANYTIME_VIG = 1.08                        # books shade anytime-goal prices ~8%
+
+
+def grade(edge_pts: float, penalties: int = 0) -> str | None:
+    """Letter grade from edge in probability points; each penalty drops one step.
+    Returns None when there's no meaningful edge (no pick)."""
+    for i, (g, cut) in enumerate(GRADE_SCALE):
+        if edge_pts >= cut:
+            return GRADE_SCALE[min(i + penalties, len(GRADE_SCALE) - 1)][0]
+    return None
+
+
+TWO_WAY_VIG = 1.07   # a fair 50% prop hangs at about -115
+
+
+def est_line(baseline_mean: float, r: float | None = None) -> float:
+    """The half-point line a book would likely hang: where the player's baseline
+    (pre-matchup) distribution is closest to a 50/50 over/under."""
+    best_k = min(range(1, 80), key=lambda k: abs(p_at_least(k, baseline_mean, r) - 0.5))
+    return best_k - 0.5
+
+
+def prop_pick(baseline_mean: float, model_mean: float, r: float | None = None):
+    """Pick a side of the estimated line. The book's price is approximated from the
+    baseline probability plus vig, so edge comes only from what the matchup adds.
+    Returns (side, line, model_prob, est_book_prob)."""
+    line = est_line(baseline_mean, r)
+    k = int(line + 0.5)
+    p_base, p_mod = p_at_least(k, baseline_mean, r), p_at_least(k, model_mean, r)
+    if p_mod >= p_base:
+        side, p, pb = "Over", p_mod, p_base
+    else:
+        side, p, pb = "Under", 1 - p_mod, 1 - p_base
+    return side, line, p, min(0.95, pb * TWO_WAY_VIG)

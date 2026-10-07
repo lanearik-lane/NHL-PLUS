@@ -9,6 +9,7 @@ Run:    pip install -r requirements.txt && streamlit run app.py
 """
 
 import datetime as dt
+import math
 from zoneinfo import ZoneInfo
 
 import altair as alt
@@ -31,8 +32,19 @@ st.markdown(
     <style>
       .nhlplus-title {font-size: 2.6rem; font-weight: 800; margin-bottom: 0;}
       .nhlplus-title span {color: #e4002b;}
-      .game-card {border: 1px solid rgba(128,128,128,.3); border-radius: 14px; padding: 14px 10px;
-                  margin-bottom: 12px; text-align: center;}
+      .game-card {border: 1px solid #2a2f3a; border-radius: 14px; padding: 14px 10px;
+                  margin-bottom: 12px; text-align: center; background: #161a22;}
+      .pick-card {border: 1px solid #2a2f3a; border-radius: 14px; padding: 14px 16px;
+                  margin-bottom: 12px; background: #161a22; display: flex; gap: 14px; align-items: center;}
+      .pick-card img {width: 58px; height: 58px; border-radius: 50%; background: #0e1117; object-fit: cover;}
+      .pick-main {flex: 1; min-width: 0;}
+      .pick-title {font-size: 1.05rem; font-weight: 700;}
+      .pick-why {font-size: .82rem; opacity: .75; margin-top: 3px;}
+      .grade {font-size: 1.5rem; font-weight: 800; min-width: 58px; text-align: center;
+              border-radius: 12px; padding: 6px 0;}
+      .g-A {background: #16a34a26; color: #4ade80;}
+      .g-B {background: #f59e0b26; color: #fbbf24;}
+      .g-C {background: #94a3b826; color: #cbd5e1;}
       .game-card img {width: 72px; height: 72px;}
       .matchup {font-size: 1.15rem; font-weight: 700;}
       .meta {font-size: .9rem; opacity: .8; line-height: 1.5;}
@@ -72,7 +84,7 @@ def season_ids(d: dt.date):
 
 
 def logo_url(abbrev: str) -> str:
-    return f"https://assets.nhle.com/logos/nhl/svg/{abbrev}_light.svg"
+    return f"https://assets.nhle.com/logos/nhl/svg/{abbrev}_dark.svg"
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -325,11 +337,21 @@ if not games:
     tab_bt = st.tabs(["📈 Backtest"])[0]
     st.info(f"No NHL games on {pick_date:%A, %B %d, %Y}. You can still run the backtest.")
 else:
-    tab_games, tab_ml, tab_sog, tab_sv, tab_g, tab_bt = st.tabs(
-        ["🏟️ Games", "🎯 Moneyline", "🏒 Shots on Goal", "🧤 Goalie Saves", "🚨 Goals", "📈 Backtest"])
+    tab_picks, tab_games, tab_ml, tab_sog, tab_sv, tab_g, tab_bt = st.tabs(
+        ["⭐ Picks", "🏟️ Games", "🎯 Moneyline", "🏒 Shots on Goal", "🧤 Goalie Saves", "🚨 Goals",
+         "📈 Backtest"])
 
 # ================================================================= project slate
-slate, ml_rows, sog_rows, save_rows, goal_rows = [], [], [], [], []
+slate, ml_rows, sog_rows, save_rows, goal_rows, picks = [], [], [], [], [], []
+
+
+def add_pick(market, pick, game, team, image, p_model, price, price_note, edge, why, penalties=0):
+    g = M.grade(edge * 100, penalties)
+    if g:
+        picks.append({"Grade": g, "Market": market, "Pick": pick, "Game": game, "Team": team,
+                      "Image": image, "Model %": round(p_model * 100, 1),
+                      "Fair": M.fmt_odds(M.to_american(p_model)), "Price": price,
+                      "Price note": price_note, "Edge pts": round(edge * 100, 1), "Why": why})
 
 
 def pick_starter(t):
@@ -356,8 +378,8 @@ for g in games:
         "venue": txt(g.get("venue")),
         "home_name": f"{txt(home.get('placeName'))} {txt(home.get('commonName'))}".strip(),
         "away_name": f"{txt(away.get('placeName'))} {txt(away.get('commonName'))}".strip(),
-        "home_logo": home.get("logo") or logo_url(home["abbrev"]),
-        "away_logo": away.get("logo") or logo_url(away["abbrev"]),
+        "home_logo": home.get("darkLogo") or logo_url(home["abbrev"]),
+        "away_logo": away.get("darkLogo") or logo_url(away["abbrev"]),
         "book": (bh, ba), "proj": None,
     }
     if h and a:
@@ -384,6 +406,14 @@ for g in games:
                 "Proj Goals": round(lam, 2), "Starter": gl["name"] if gl else "?",
                 "Rest": "B2B" if t["b2b"] else "Rested",
             })
+            if bo is not None:
+                why = (f"Model {prob:.0%} vs market {nvp:.0%} (no-vig) · proj {lam:.1f} goals · "
+                       f"{'opp starter ' + (ag if side == 'Home' else hg)['name'] if (ag if side == 'Home' else hg) else ''}"
+                       f"{' · opp on B2B' if (a if side == 'Home' else h)['b2b'] else ''}")
+                add_pick("Moneyline", f"{team['abbrev']} ML", label, team["abbrev"],
+                         info["home_logo"] if side == "Home" else info["away_logo"],
+                         prob, M.fmt_odds(bo), "DraftKings", prob - M.implied(bo), why,
+                         penalties=1 if t["b2b"] and gl and len(t["goalies"]) > 1 else 0)
 
         for me, opp, opp_g, my_g, my_src, x_sog_against, venue in (
             (h, a, ag, hg, h_src, p["sog_a"], M.HOME_ADV),
@@ -413,6 +443,22 @@ for g in games:
                                   "Anytime %": round(p_any * 100, 1),
                                   "Fair Odds": M.fmt_odds(M.to_american(p_any)),
                                   "2+ Goals %": round(M.p_at_least(2, x_g) * 100, 1)})
+
+                small = 1 if s["gp"] + s["prev_gp"] < 30 else 0
+                side, line, p, pb = M.prop_pick(s["sog_rate"], x_sog, M.SOG_DISPERSION)
+                add_pick("Shots on Goal", f"{s['name']} {side} {line} SOG", label, me["abbrev"],
+                         s["headshot"], p, M.fmt_odds(M.to_american(pb)), "est. line + price",
+                         p - pb,
+                         f"Proj {x_sog:.2f} vs usual {s['sog_rate']:.2f} · {opp['abbrev']} allows "
+                         f"{opp['sa']:.1f} SOG/gm", small)
+
+                p_base = 1 - math.exp(-s["g_rate"])
+                book_p = min(0.95, p_base * M.ANYTIME_VIG)
+                add_pick("Goals", f"{s['name']} anytime goal", label, me["abbrev"], s["headshot"],
+                         p_any, M.fmt_odds(M.to_american(book_p)), "est. price",
+                         p_any - book_p,
+                         f"Proj {x_g:.2f} goals vs usual {s['g_rate']:.2f} · faces "
+                         f"{opp_g['name'] if opp_g else 'unknown'} ({opp_sv:.3f})", small)
             if my_g:
                 x_sv = x_sog_against * my_g["sv"]
                 save_rows.append({
@@ -424,6 +470,14 @@ for g in games:
                     **{f"O {ln}.5 %": round(M.p_at_least(ln + 1, x_sv, M.SAVES_DISPERSION) * 100, 1)
                        for ln in (22, 25, 28)},
                 })
+                baseline = me["sa"] * my_g["sv"]
+                side, line, p, pb = M.prop_pick(baseline, x_sv, M.SAVES_DISPERSION)
+                add_pick("Goalie Saves", f"{my_g['name']} {side} {line} saves", label, me["abbrev"],
+                         my_g["headshot"], p, M.fmt_odds(M.to_american(pb)), "est. line + price",
+                         p - pb,
+                         f"Proj {x_sv:.1f} saves vs usual {baseline:.1f} · {opp['abbrev']} proj "
+                         f"{x_sog_against:.1f} SOG · {my_src.lower()}",
+                         1 if my_src == "B2B backup" else 0)
     slate.append(info)
 
 IMG = st.column_config.ImageColumn
@@ -436,6 +490,51 @@ if games:
         if df.empty or pick_game == "All games":
             return df
         return df[df["Game"] == pick_game]
+
+    # ------------------------------------------------------------- Picks
+    with tab_picks:
+        st.subheader("Today's picks — graded")
+        c1, c2, c3 = st.columns([2, 1, 1])
+        markets = c1.multiselect("Markets", ["Moneyline", "Shots on Goal", "Goalie Saves", "Goals"],
+                                 default=["Moneyline", "Shots on Goal", "Goalie Saves", "Goals"])
+        min_grade = c2.selectbox("Minimum grade", [g for g, _ in M.GRADE_SCALE], index=3)
+        per_market = c3.slider("Max per market", 1, 15, 5)
+        df = filt(picks)
+        if df.empty:
+            st.info("No picks clear the edge threshold for this slate. That's normal on some nights — "
+                    "passing is a pick too.")
+        else:
+            df = df[df["Market"].isin(markets) & (df["Grade"].map(M.GRADE_ORDER) <= M.GRADE_ORDER[min_grade])]
+            df = (df.assign(_g=df["Grade"].map(M.GRADE_ORDER))
+                    .sort_values(["_g", "Edge pts"], ascending=[True, False])
+                    .groupby("Market", sort=False).head(per_market).drop(columns="_g"))
+            if df.empty:
+                st.info("No picks at this grade. Try lowering the minimum grade.")
+            cols = st.columns(2)
+            for i, r in enumerate(df.itertuples(index=False)):
+                cls = "g-" + r.Grade[0]
+                cols[i % 2].markdown(
+                    f"""<div class="pick-card">
+                          <div class="grade {cls}">{r.Grade}</div>
+                          <img src="{r.Image or ''}" onerror="this.style.visibility='hidden'">
+                          <div class="pick-main">
+                            <div class="pick-title">{r.Pick}</div>
+                            <div class="meta">{r.Market} · {r.Game} · model {r[6]:.1f}% · fair {r.Fair} ·
+                              price {r.Price} ({r[9]}) · edge +{r[10]:.1f} pts</div>
+                            <div class="pick-why">{r.Why}</div>
+                          </div>
+                        </div>""",
+                    unsafe_allow_html=True)
+            with st.expander("All picks as a table"):
+                st.dataframe(df, hide_index=True, width="stretch",
+                             column_config={"Image": IMG(width="small")})
+        st.caption(
+            "**How grades work:** edge = model probability minus the break-even probability at the "
+            "price. A+ ≥ 7 pts · A ≥ 5 · B+ ≥ 3.5 · B ≥ 2 · C ≥ 0.5. Picks drop a grade for small "
+            "player samples or a guessed backup goalie. Moneylines use the posted DraftKings price. "
+            "Props use an **estimated** line and price (set from the player's usual average plus "
+            "typical juice), so the edge is what the matchup adds — check your book's real line "
+            "and price before betting. Grades rank model confidence; they don't guarantee results. Bet responsibly.")
 
     # ------------------------------------------------------------- Games
     with tab_games:
