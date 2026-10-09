@@ -130,7 +130,7 @@ def season_totals(player_id: int, season: str) -> dict | None:
             and r.get("leagueAbbrev") == "NHL"]
     if not rows:
         return None
-    keys = ("gamesPlayed", "goals", "shots", "gamesStarted", "shotsAgainst", "goalsAgainst")
+    keys = ("gamesPlayed", "goals", "assists", "points", "shots", "gamesStarted", "shotsAgainst", "goalsAgainst")
     tot = {k: sum(r.get(k, 0) or 0 for r in rows) for k in keys}
     tot["saves"] = tot["shotsAgainst"] - tot["goalsAgainst"]
     return tot
@@ -246,6 +246,10 @@ def team_model(abbrev: str, cur: str, prev: str, date_str: str) -> dict:
             "gp": cgp, "prev_gp": pgp,
             "sog_rate": M.blend_rate(c.get("shots", 0), cgp, prior_sog, M.SKATER_SOG_K),
             "g_rate": M.blend_rate(c.get("goals", 0), cgp, prior_g, M.SKATER_G_K),
+            "a_rate": M.blend_rate(c.get("assists", 0), cgp,
+                                   M.prior_rate(pv.get("assists", 0), pgp, M.POS_PRIOR[pc]["a"]), M.SKATER_A_K),
+            "p_rate": M.blend_rate(c.get("points", 0), cgp,
+                                   M.prior_rate(pv.get("points", 0), pgp, M.POS_PRIOR[pc]["p"]), M.SKATER_P_K),
             "in_lineup": lineup_ids is None or pid in lineup_ids,
         })
 
@@ -337,12 +341,13 @@ if not games:
     tab_bt = st.tabs(["📈 Backtest"])[0]
     st.info(f"No NHL games on {pick_date:%A, %B %d, %Y}. You can still run the backtest.")
 else:
-    tab_daily, tab_picks, tab_games, tab_ml, tab_sog, tab_sv, tab_g, tab_bt = st.tabs(
-        ["📋 Daily Card", "⭐ Picks", "🏟️ Games", "🎯 Moneyline", "🏒 Shots on Goal", "🧤 Goalie Saves", "🚨 Goals",
+    tab_daily, tab_props, tab_picks, tab_games, tab_ml, tab_sog, tab_sv, tab_g, tab_bt = st.tabs(
+        ["📋 Daily Card", "🧾 All Props", "⭐ Picks", "🏟️ Games", "🎯 Moneyline", "🏒 Shots on Goal", "🧤 Goalie Saves", "🚨 Goals",
          "📈 Backtest"])
 
 # ================================================================= project slate
 slate, ml_rows, sog_rows, save_rows, goal_rows, picks = [], [], [], [], [], []
+prop_rows, goalie_prop_rows = [], []
 
 
 def add_pick(market, pick, game, team, image, p_model, price, price_note, edge, why, penalties=0):
@@ -352,6 +357,50 @@ def add_pick(market, pick, game, team, image, p_model, price, price_note, edge, 
                       "Image": image, "Model %": round(p_model * 100, 1),
                       "Fair": M.fmt_odds(M.to_american(p_model)), "Price": price,
                       "Price note": price_note, "Edge pts": round(edge * 100, 1), "Why": why})
+
+
+def build_props(s, me, opp, opp_g, opp_sv, shot_adj, goal_adj, label):
+    """Every prop for one skater: SOG ladder, anytime goal, points, assists — each graded."""
+    small = 1 if s["gp"] + s["prev_gp"] < 30 else 0
+    x_sog = s["sog_rate"] * shot_adj
+    x_g, x_a, x_p = s["g_rate"] * goal_adj, s["a_rate"] * goal_adj, s["p_rate"] * goal_adj
+    sog_lad = M.over_ladder(x_sog, r=M.SOG_DISPERSION)
+    sd, sln, sp, spb = M.prop_pick(s["sog_rate"], x_sog, M.SOG_DISPERSION)
+    p_any = M.p_at_least(1, x_g)
+    g_book = min(0.95, (1 - math.exp(-s["g_rate"])) * M.ANYTIME_VIG)
+    pd_, pln, pp, ppb = M.prop_pick(s["p_rate"], x_p)
+    ad, aln, ap, apb = M.prop_pick(s["a_rate"], x_a)
+    grades = {"SOG": M.grade((sp - spb) * 100, small), "Goal": M.grade((p_any - g_book) * 100, small),
+              "Points": M.grade((pp - ppb) * 100, small), "Assists": M.grade((ap - apb) * 100, small)}
+    best = min((g for g in grades.values() if g), key=lambda g: M.GRADE_ORDER[g], default=None)
+    for mk, g in grades.items():
+        if not g:
+            continue
+        pick, p, pb = {"SOG": (f"{sd} {sln} SOG", sp, spb), "Goal": ("anytime goal", p_any, g_book),
+                       "Points": (f"{pd_} {pln} points", pp, ppb), "Assists": (f"{ad} {aln} assists", ap, apb)}[mk]
+        if mk in ("Points", "Assists"):
+            add_pick(mk, f"{s['name']} {pick}", label, me["abbrev"], s["headshot"], p,
+                     M.fmt_odds(M.to_american(pb)), "est. line + price", p - pb,
+                     f"Proj {x_p if mk == 'Points' else x_a:.2f} vs usual "
+                     f"{s['p_rate'] if mk == 'Points' else s['a_rate']:.2f} · {me['abbrev']} scoring "
+                     f"boost vs {opp['abbrev']} ×{goal_adj:.2f}", small)
+    return {
+        "Photo": s["headshot"], "Player": s["name"], "Pos": s["pos"], "Team": me["abbrev"],
+        "Opp": opp["abbrev"], "Game": label, "GP": s["gp"], "Prev GP": s["prev_gp"],
+        "Best": best or "Pass",
+        "Proj SOG": round(x_sog, 2), **{f"SOG O{k}": round(v * 100) for k, v in sog_lad.items()},
+        "SOG pick": f"{sd} {sln}", "SOG grade": grades["SOG"] or "Pass",
+        "Goal %": round(p_any * 100, 1), "Goal fair": M.fmt_odds(M.to_american(p_any)),
+        "Goal grade": grades["Goal"] or "Pass",
+        "Proj Pts": round(x_p, 2), "Pts O0.5": round(M.p_at_least(1, x_p) * 100),
+        "Pts O1.5": round(M.p_at_least(2, x_p) * 100),
+        "Pts fair": M.fmt_odds(M.to_american(M.p_at_least(1, x_p))), "Pts pick": f"{pd_} {pln}",
+        "Pts grade": grades["Points"] or "Pass",
+        "Ast O0.5": round(M.p_at_least(1, x_a) * 100),
+        "Ast fair": M.fmt_odds(M.to_american(M.p_at_least(1, x_a))), "Ast pick": f"{ad} {aln}",
+        "Ast grade": grades["Assists"] or "Pass",
+        "Sample": "small" if small else "",
+    }
 
 
 def pick_starter(t):
@@ -425,11 +474,12 @@ for g in games:
             shot_adj = opp["sa"] / M.LEAGUE["sog"]
             goal_adj = shot_adj * M.goalie_factor(opp_sv) * venue * (1 - M.B2B_PENALTY if me["b2b"] else 1)
             for s in me["skaters"]:
-                if s["gp"] + s["prev_gp"] < min_gp:
-                    continue
                 if f"{s['name']} ({me['abbrev']})" in excluded:
                     continue
                 if lineup_only and not s["in_lineup"]:
+                    continue
+                prop_rows.append(build_props(s, me, opp, opp_g, opp_sv, shot_adj, goal_adj, label))
+                if s["gp"] + s["prev_gp"] < min_gp:
                     continue
                 base = {"Photo": s["headshot"], "Player": s["name"], "Pos": s["pos"],
                         "Team": me["abbrev"], "Opp": opp["abbrev"], "Game": label,
@@ -468,6 +518,21 @@ for g in games:
                                       "Grade": M.grade((p_any - book_p) * 100, small),
                                       "Why": f"faces {opp_g['name'] if opp_g else 'unknown'} "
                                              f"({opp_sv:.3f}) · {opp['abbrev']} allows {opp['sa']:.1f} SOG/gm"})
+            for gk in me["goalies"]:
+                xs = x_sog_against * gk["sv"]
+                base_sv = me["sa"] * gk["sv"]
+                sd, ln, pg, pbg = M.prop_pick(base_sv, xs, M.SAVES_DISPERSION)
+                lad = M.over_ladder(xs, (19.5, 22.5, 25.5, 28.5, 31.5), M.SAVES_DISPERSION)
+                goalie_prop_rows.append({
+                    "Photo": gk["headshot"], "Goalie": gk["name"], "Team": me["abbrev"], "Opp": opp["abbrev"],
+                    "Game": label, "Projected starter": "✅" if my_g and gk["name"] == my_g["name"] else "",
+                    "SV%*": round(gk["sv"], 3), "Proj saves": round(xs, 1),
+                    **{f"O {k}": round(v * 100) for k, v in lad.items()},
+                    "Est line": ln, "Pick": f"{sd} {ln}", "Model %": round(pg * 100, 1),
+                    "Grade": M.grade((pg - pbg) * 100,
+                                     0 if (my_g and gk["name"] == my_g["name"] and my_src != "B2B backup")
+                                     else 1) or "Pass",
+                })
             if my_g:
                 x_sv = x_sog_against * my_g["sv"]
                 save_rows.append({
@@ -649,12 +714,68 @@ if games:
         st.download_button("⬇️ Download today's card", "\n".join(lines),
                            file_name=f"nhl-plus-{date_str}.txt", mime="text/plain")
 
+    # ------------------------------------------------------------- All Props
+    with tab_props:
+        st.subheader("All player props")
+        st.caption("Every player who dressed last game (or the full roster before a team's first game). "
+                   "Numbers in the ladders are the model's % chance of going **over** each line. "
+                   "Grades compare the model to an estimated line + juice — check your book.")
+        pdf = filt(prop_rows)
+        if pdf.empty:
+            st.info("No players available for this slate.")
+        else:
+            f1, f2, f3, f4 = st.columns([2, 2, 1, 1])
+            q = f1.text_input("Search player", placeholder="Connor")
+            teams_sel = f2.multiselect("Teams", sorted(pdf["Team"].unique()))
+            pos_sel = f3.selectbox("Position", ["All", "F", "D"])
+            graded_only = f4.toggle("Graded only")
+            view = st.radio("Show", ["Everything", "Shots", "Goals", "Points", "Assists"], horizontal=True)
+            if q:
+                pdf = pdf[pdf["Player"].str.contains(q, case=False)]
+            if teams_sel:
+                pdf = pdf[pdf["Team"].isin(teams_sel)]
+            if pos_sel == "D":
+                pdf = pdf[pdf["Pos"] == "D"]
+            elif pos_sel == "F":
+                pdf = pdf[pdf["Pos"] != "D"]
+            if graded_only:
+                pdf = pdf[pdf["Best"] != "Pass"]
+            base_cols = ["Photo", "Player", "Pos", "Team", "Opp", "Best"]
+            cols_by_view = {
+                "Shots": ["Proj SOG", "SOG O0.5", "SOG O1.5", "SOG O2.5", "SOG O3.5", "SOG O4.5", "SOG pick", "SOG grade"],
+                "Goals": ["Goal %", "Goal fair", "Goal grade"],
+                "Points": ["Proj Pts", "Pts O0.5", "Pts O1.5", "Pts fair", "Pts pick", "Pts grade"],
+                "Assists": ["Ast O0.5", "Ast fair", "Ast pick", "Ast grade"],
+            }
+            show = base_cols + (sum(cols_by_view.values(), []) + ["GP", "Prev GP", "Sample"]
+                                if view == "Everything" else cols_by_view[view])
+            sort_col = {"Everything": "Proj SOG", "Shots": "Proj SOG", "Goals": "Goal %",
+                        "Points": "Proj Pts", "Assists": "Ast O0.5"}[view]
+            pdf = (pdf.assign(_g=pdf["Best"].map(M.GRADE_ORDER).fillna(9))
+                      .sort_values(["_g", sort_col] if graded_only else [sort_col],
+                                   ascending=[True, False] if graded_only else [False]))
+            st.caption(f"{len(pdf)} players")
+            st.dataframe(pdf[show], hide_index=True, width="stretch", height=560,
+                         column_config={"Photo": IMG(width="small"),
+                                        "Goal %": st.column_config.ProgressColumn(min_value=0, max_value=60, format="%.1f%%")})
+            st.download_button("⬇️ Download all props (CSV)", pdf.drop(columns=["Photo", "_g"]).to_csv(index=False),
+                               file_name=f"nhl-plus-props-{date_str}.csv", mime="text/csv")
+
+        st.markdown("#### 🧤 Goalie saves — every goalie")
+        gdf = filt(goalie_prop_rows)
+        if gdf.empty:
+            st.info("No goalie data available.")
+        else:
+            st.caption("Ladder = % chance of going over each saves line if that goalie starts.")
+            st.dataframe(gdf.sort_values(["Game", "Projected starter"], ascending=[True, False]),
+                         hide_index=True, width="stretch", column_config={"Photo": IMG(width="small")})
+
     # ------------------------------------------------------------- Picks
     with tab_picks:
         st.subheader("Today's picks — graded")
         c1, c2, c3 = st.columns([2, 1, 1])
-        markets = c1.multiselect("Markets", ["Moneyline", "Shots on Goal", "Goalie Saves", "Goals"],
-                                 default=["Moneyline", "Shots on Goal", "Goalie Saves", "Goals"])
+        all_mk = ["Moneyline", "Shots on Goal", "Goalie Saves", "Goals", "Points", "Assists"]
+        markets = c1.multiselect("Markets", all_mk, default=all_mk)
         min_grade = c2.selectbox("Minimum grade", [g for g, _ in M.GRADE_SCALE], index=3)
         per_market = c3.slider("Max per market", 1, 15, 5)
         df = filt(picks)

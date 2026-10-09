@@ -139,3 +139,13 @@ def test_grade_ladder():
     # longer price needed for better grade
     assert M.implied(lad["A+"]) < M.implied(lad["A"]) < M.implied(lad["B"])
     assert M.grade_ladder(0.05)["A+"] is None
+
+
+def test_over_ladder_monotonic_and_priors():
+    lad = M.over_ladder(2.8, r=M.SOG_DISPERSION)
+    vals = list(lad.values())
+    assert all(a > b for a, b in zip(vals, vals[1:]))
+    assert lad[0.5] == pytest.approx(1 - M.nb_pmf(0, 2.8, M.SOG_DISPERSION))
+    for pos in ("F", "D"):
+        pr = M.POS_PRIOR[pos]
+        assert pr["p"] == pytest.approx(pr["g"] + pr["a"], abs=0.01)

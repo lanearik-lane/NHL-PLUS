@@ -23,12 +23,14 @@ from collections import defaultdict
 # ------------------------------------------------------------------ constants
 LEAGUE = {"gf": 3.05, "sog": 28.5, "sv": 0.900}   # per team per game; goalie SV%
 POS_PRIOR = {  # per-game priors for skaters with little NHL history
-    "F": {"sog": 1.9, "g": 0.22},
-    "D": {"sog": 1.2, "g": 0.06},
+    "F": {"sog": 1.9, "g": 0.22, "a": 0.30, "p": 0.52},
+    "D": {"sog": 1.2, "g": 0.06, "a": 0.22, "p": 0.28},
 }
 TEAM_K = 15          # phantom games of prior weight for team rates
 SKATER_SOG_K = 10    # ... for skater shots
 SKATER_G_K = 25      # ... for skater goals (noisier, so heavier prior)
+SKATER_A_K = 25      # ... for skater assists
+SKATER_P_K = 20      # ... for skater points
 GOALIE_SV_K = 800    # phantom shots of prior weight for goalie save %
 PRIOR_REGRESS = 0.30 # pull last season 30% toward league/position average
 HOME_ADV = 1.03      # home scoring multiplier (away gets 2 - HOME_ADV)
@@ -278,3 +280,8 @@ def grade_ladder(p_model: float) -> dict:
         else:
             out[g] = worth_it_price(p_model, GRADE_CUTS[g] / 100)
     return out
+
+
+def over_ladder(mean: float, lines=(0.5, 1.5, 2.5, 3.5, 4.5), r: float | None = None) -> dict:
+    """P(over) at each half-point line."""
+    return {ln: p_at_least(int(ln + 0.5), mean, r) for ln in lines}
