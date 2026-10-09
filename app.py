@@ -337,8 +337,8 @@ if not games:
     tab_bt = st.tabs(["📈 Backtest"])[0]
     st.info(f"No NHL games on {pick_date:%A, %B %d, %Y}. You can still run the backtest.")
 else:
-    tab_picks, tab_games, tab_ml, tab_sog, tab_sv, tab_g, tab_bt = st.tabs(
-        ["⭐ Picks", "🏟️ Games", "🎯 Moneyline", "🏒 Shots on Goal", "🧤 Goalie Saves", "🚨 Goals",
+    tab_daily, tab_picks, tab_games, tab_ml, tab_sog, tab_sv, tab_g, tab_bt = st.tabs(
+        ["📋 Daily Card", "⭐ Picks", "🏟️ Games", "🎯 Moneyline", "🏒 Shots on Goal", "🧤 Goalie Saves", "🚨 Goals",
          "📈 Backtest"])
 
 # ================================================================= project slate
@@ -405,6 +405,8 @@ for g in games:
                 "Edge %": None if nvp is None else round((prob - nvp) * 100, 1),
                 "Proj Goals": round(lam, 2), "Starter": gl["name"] if gl else "?",
                 "Rest": "B2B" if t["b2b"] else "Rested",
+                "Worth it at": M.worth_it_label(M.worth_it_price(prob)),
+                "Grade": M.grade((prob - M.implied(bo)) * 100) if bo is not None else None,
             })
             if bo is not None:
                 why = (f"Model {prob:.0%} vs market {nvp:.0%} (no-vig) · proj {lam:.1f} goals · "
@@ -451,6 +453,9 @@ for g in games:
                          p - pb,
                          f"Proj {x_sog:.2f} vs usual {s['sog_rate']:.2f} · {opp['abbrev']} allows "
                          f"{opp['sa']:.1f} SOG/gm", small)
+                sog_rows[-1].update({"Est line": line, "Lean": side,
+                                     "Edge pts": round((p - pb) * 100, 1),
+                                     "Grade": M.grade((p - pb) * 100, small)})
 
                 p_base = 1 - math.exp(-s["g_rate"])
                 book_p = min(0.95, p_base * M.ANYTIME_VIG)
@@ -459,6 +464,10 @@ for g in games:
                          p_any - book_p,
                          f"Proj {x_g:.2f} goals vs usual {s['g_rate']:.2f} · faces "
                          f"{opp_g['name'] if opp_g else 'unknown'} ({opp_sv:.3f})", small)
+                goal_rows[-1].update({"Edge pts": round((p_any - book_p) * 100, 1),
+                                      "Grade": M.grade((p_any - book_p) * 100, small),
+                                      "Why": f"faces {opp_g['name'] if opp_g else 'unknown'} "
+                                             f"({opp_sv:.3f}) · {opp['abbrev']} allows {opp['sa']:.1f} SOG/gm"})
             if my_g:
                 x_sv = x_sog_against * my_g["sv"]
                 save_rows.append({
@@ -478,6 +487,12 @@ for g in games:
                          f"Proj {x_sv:.1f} saves vs usual {baseline:.1f} · {opp['abbrev']} proj "
                          f"{x_sog_against:.1f} SOG · {my_src.lower()}",
                          1 if my_src == "B2B backup" else 0)
+                save_rows[-1].update({
+                    "Usual": round(baseline, 1), "Est line": line, "Lean": side,
+                    "Model %": round(p * 100, 1), "Edge pts": round((p - pb) * 100, 1),
+                    "Grade": M.grade((p - pb) * 100, 1 if my_src == "B2B backup" else 0),
+                    "Why": f"{opp['abbrev']} proj {x_sog_against:.1f} SOG (avg {M.LEAGUE['sog']:.1f}) · "
+                           f"proj {x_sv:.1f} saves vs usual {baseline:.1f}"})
     slate.append(info)
 
 IMG = st.column_config.ImageColumn
@@ -490,6 +505,100 @@ if games:
         if df.empty or pick_game == "All games":
             return df
         return df[df["Game"] == pick_game]
+
+    # ------------------------------------------------------------- Daily Card
+    with tab_daily:
+        any_odds = any(s["book"][0] is not None for s in slate)
+        st.subheader(f"Daily Card · {pick_date:%A, %B %d}")
+        st.caption(f"{len(slate)} game(s) · rebuilt automatically from live NHL stats every time the app "
+                   f"loads (refreshes every 10–30 min) · "
+                   f"{'DraftKings moneylines posted' if any_odds else 'moneylines not posted yet — showing fair lines'}"
+                   " · starters and prop lines unconfirmed until game day")
+
+        def gtag(g):
+            return f"<span class='grade g-{g[0]}' style='font-size:1rem;padding:2px 8px;min-width:0'>{g}</span>" if g else "<span style='opacity:.5'>—</span>"
+
+        def section(title, rows_html, note=""):
+            st.markdown(f"#### {title}")
+            st.markdown("<div class='game-card' style='text-align:left'>" + "".join(rows_html) + "</div>",
+                        unsafe_allow_html=True)
+            if note:
+                st.caption(note)
+
+        def row(img, grade_html, title, sub):
+            return (f"<div style='display:flex;gap:12px;align-items:center;padding:6px 0;"
+                    f"border-bottom:1px solid #2a2f3a'>{grade_html}"
+                    f"<img src='{img or ''}' style='width:40px;height:40px;border-radius:50%;object-fit:cover;"
+                    f"background:#0e1117' onerror=\"this.style.visibility='hidden'\">"
+                    f"<div style='flex:1;min-width:0'><b>{title}</b><div class='meta'>{sub}</div></div></div>")
+
+        lines = [f"NHL PLUS Daily Card — {pick_date:%a %b %d, %Y}", ""]
+
+        # Saves: every projected starter, best edge first
+        sv = sorted(save_rows, key=lambda r: (M.GRADE_ORDER.get(r.get("Grade"), 9), -r.get("Edge pts", -99)))
+        if sv:
+            section("🧤 Goalie saves",
+                    [row(r["Photo"], gtag(r.get("Grade")),
+                         f"{r['Goalie']} ({r['Team']}) {r['Lean']} {r['Est line']} saves",
+                         f"{r['Why']} · model {r['Model %']:.0f}% · edge {r['Edge pts']:+.1f} pts · {r['Pick'].lower()}")
+                     for r in sv[:8]],
+                    "Lines are estimated; confirm the starter and your book's line before betting.")
+            lines += ["GOALIE SAVES"] + [f"  [{r.get('Grade') or '-'}] {r['Goalie']} ({r['Team']}) {r['Lean']} "
+                                         f"{r['Est line']} — proj {r['Proj Saves']}" for r in sv[:8]] + [""]
+
+        # SOG: top projections
+        sg = sorted(sog_rows, key=lambda r: -r["Proj SOG"])[:8]
+        if sg:
+            section("🏒 Shots on goal — top candidates",
+                    [row(r["Photo"], gtag(r.get("Grade")), f"{r['Player']} ({r['Team']} vs {r['Opp']})",
+                         f"proj {r['Proj SOG']:.2f} · O1.5 {r['O 1.5 %']:.0f}% · O2.5 {r['O 2.5 %']:.0f}% · "
+                         f"O3.5 {r['O 3.5 %']:.0f}% · est line {r['Est line']} ({r['Lean']} lean)")
+                     for r in sg],
+                    "Grade shows only when the matchup adds real edge over the player's usual line.")
+            lines += ["SHOTS ON GOAL"] + [f"  [{r.get('Grade') or '-'}] {r['Player']} ({r['Team']}) proj "
+                                          f"{r['Proj SOG']:.2f} · O2.5 {r['O 2.5 %']:.0f}% · O3.5 {r['O 3.5 %']:.0f}%"
+                                          for r in sg] + [""]
+
+        # Goals: top anytime
+        gl_ = sorted(goal_rows, key=lambda r: -r["Anytime %"])[:8]
+        if gl_:
+            section("🚨 Anytime goal — top candidates",
+                    [row(r["Photo"], gtag(r.get("Grade")), f"{r['Player']} ({r['Team']} vs {r['Opp']})",
+                         f"{r['Anytime %']:.0f}% to score · fair {r['Fair Odds']} — bet only longer than this · "
+                         f"{r['Why']}")
+                     for r in gl_])
+            lines += ["ANYTIME GOAL"] + [f"  [{r.get('Grade') or '-'}] {r['Player']} ({r['Team']}) "
+                                         f"{r['Anytime %']:.0f}% · fair {r['Fair Odds']}" for r in gl_] + [""]
+
+        # Moneyline
+        mlr = []
+        lines.append("MONEYLINE")
+        for s in slate:
+            p = s["proj"]
+            if not p:
+                continue
+            g = s["game"]
+            ab, hb = g["awayTeam"]["abbrev"], g["homeTeam"]["abbrev"]
+            bh, ba = s["book"]
+            fav, pf = (hb, p["ph"]) if p["ph"] >= 0.5 else (ab, 1 - p["ph"])
+            wa, wh = M.worth_it_price(1 - p["ph"]), M.worth_it_price(p["ph"])
+            gh = M.grade((p["ph"] - M.implied(bh)) * 100) if bh is not None else None
+            ga = M.grade((1 - p["ph"] - M.implied(ba)) * 100) if ba is not None else None
+            best = gh or ga
+            book = f" · book {ab} {M.fmt_odds(ba)} / {hb} {M.fmt_odds(bh)}" if bh is not None else ""
+            pick_txt = (f" · <b>value: {hb if gh else ab}</b>" if best else "")
+            mlr.append(row(s["home_logo"], gtag(best), f"{s['label']} · {s['start']:%I:%M %p %Z}",
+                           f"model {fav} {pf:.0%} · fair {ab} {M.fmt_odds(M.to_american(1 - p['ph']))} / "
+                           f"{hb} {M.fmt_odds(M.to_american(p['ph']))} · worth it at {ab} {M.worth_it_label(wa)}, "
+                           f"{hb} {M.worth_it_label(wh)}{book}{pick_txt}"))
+            lines.append(f"  {s['label']}: {fav} {pf:.0%} · worth it at {ab} {M.fmt_odds(wa)} / {hb} {M.fmt_odds(wh)}"
+                         + (f" · book {ab} {M.fmt_odds(ba)} / {hb} {M.fmt_odds(bh)}" if bh is not None else ""))
+        if mlr:
+            section("🎯 Moneyline", mlr, "'Worth it at' = the worst price that still gives a B-grade (2-pt) edge.")
+
+        lines += ["", "Model output, not guarantees. Bet responsibly — 1-800-GAMBLER."]
+        st.download_button("⬇️ Download today's card", "\n".join(lines),
+                           file_name=f"nhl-plus-{date_str}.txt", mime="text/plain")
 
     # ------------------------------------------------------------- Picks
     with tab_picks:

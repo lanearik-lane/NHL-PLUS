@@ -252,3 +252,14 @@ def prop_pick(baseline_mean: float, model_mean: float, r: float | None = None):
     else:
         side, p, pb = "Under", 1 - p_mod, 1 - p_base
     return side, line, p, min(0.95, pb * TWO_WAY_VIG)
+
+
+def worth_it_price(p_model: float, min_edge: float = 0.02) -> int:
+    """Worst American price still worth betting: model edge >= min_edge (default = grade B)."""
+    be = min(max(p_model - min_edge, 0.01), 0.99)
+    return -math.floor(100 * be / (1 - be)) if be >= 0.5 else math.ceil(100 * (1 - be) / be)
+
+
+def worth_it_label(o: int) -> str:
+    """Reads naturally for both favourites and underdogs."""
+    return f"{fmt_odds(o)} or better"

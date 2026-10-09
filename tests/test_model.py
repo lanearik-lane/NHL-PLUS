@@ -117,3 +117,15 @@ def test_est_line_and_prop_pick():
     assert side == "Over" and p > pb
     side, line, p, pb = M.prop_pick(2.5, 1.8, r)
     assert side == "Under" and p > pb
+
+
+def test_worth_it_price():
+    # 54% model -> needs book implied <= 52%
+    o = M.worth_it_price(0.54)
+    assert -110 <= o <= -108 and M.implied(o) <= 0.52 + 1e-9
+    o = M.worth_it_price(0.46)
+    assert 126 <= o <= 128 and M.implied(o) <= 0.44 + 1e-9
+    # any price at least this good gives >= 2 pts edge -> grade B or better
+    for p in (0.3, 0.45, 0.5, 0.62):
+        o = M.worth_it_price(p)
+        assert M.grade((p - M.implied(o)) * 100) in ("B", "B+", "A", "A+")
