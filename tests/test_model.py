@@ -129,3 +129,13 @@ def test_worth_it_price():
     for p in (0.3, 0.45, 0.5, 0.62):
         o = M.worth_it_price(p)
         assert M.grade((p - M.implied(o)) * 100) in ("B", "B+", "A", "A+")
+
+
+def test_grade_ladder():
+    lad = M.grade_ladder(0.54)
+    assert lad["B"] == M.worth_it_price(0.54, 0.02)
+    for g, o in lad.items():
+        assert M.grade((0.54 - M.implied(o)) * 100) in {"B": ("B", "B+", "A", "A+"), "A": ("A", "A+"), "A+": ("A+",)}[g]
+    # longer price needed for better grade
+    assert M.implied(lad["A+"]) < M.implied(lad["A"]) < M.implied(lad["B"])
+    assert M.grade_ladder(0.05)["A+"] is None

@@ -534,6 +534,55 @@ if games:
 
         lines = [f"NHL PLUS Daily Card — {pick_date:%a %b %d, %Y}", ""]
 
+        # ---------------- Report card: grade now + price needed for each grade
+        rc = []
+
+        def rc_add(market, pick, game, p, grade_now, note):
+            lad = M.grade_ladder(p)
+            rc.append({"Market": market, "Pick": pick, "Game": game, "Model %": round(p * 100, 1),
+                       "Grade now": grade_now or "Pass",
+                       "B at": M.fmt_odds(lad["B"]), "A at": M.fmt_odds(lad["A"]),
+                       "A+ at": M.fmt_odds(lad["A+"]), "Note": note})
+
+        for r in save_rows:
+            if "Lean" in r:
+                rc_add("Saves", f"{r['Goalie']} {r['Lean']} {r['Est line']}", r["Game"], r["Model %"] / 100,
+                       r.get("Grade"), "graded vs estimated line + juice · confirm starter")
+        for r in sorted(sog_rows, key=lambda r: -r["Proj SOG"])[:8]:
+            for ln, col in ((2.5, "O 2.5 %"), (3.5, "O 3.5 %")):
+                p = r[col] / 100
+                if ln == 3.5 and p < 0.40:
+                    continue
+                g_now = r.get("Grade") if (r.get("Est line") == ln and r.get("Lean") == "Over") else None
+                rc_add("SOG", f"{r['Player']} Over {ln}", r["Game"], p, g_now,
+                       f"proj {r['Proj SOG']:.2f} · usual line {r.get('Est line')}")
+        for r in sorted(goal_rows, key=lambda r: -r["Anytime %"])[:8]:
+            rc_add("Goals", f"{r['Player']} anytime", r["Game"], r["Anytime %"] / 100, r.get("Grade"),
+                   f"fair {r['Fair Odds']} · graded vs estimated price")
+        for r in ml_rows:
+            rc_add("Moneyline", f"{r['Team']} ML", r["Game"], r["Win %"] / 100,
+                   r.get("Grade") if r["Book ML"] != "—" else None,
+                   f"book {r['Book ML']}" if r["Book ML"] != "—" else "odds not posted — use the price ladder")
+
+        if rc:
+            st.markdown("#### 📝 Report card")
+            st.caption("**Grade now** uses posted or estimated prices. **B / A / A+ at** = the worst price "
+                       "your book can offer and still earn that grade (— = not reachable). "
+                       "Compare these to your sportsbook before betting.")
+            rcdf = pd.DataFrame(rc)
+            rcdf["_g"] = rcdf["Grade now"].map(M.GRADE_ORDER).fillna(9)
+            mkts = st.multiselect("Report card markets", ["Saves", "SOG", "Goals", "Moneyline"],
+                                  default=["Saves", "SOG", "Goals", "Moneyline"], key="rc_mkts")
+            rcdf = rcdf[rcdf["Market"].isin(mkts)].sort_values(["_g", "Model %"], ascending=[True, False])
+            st.dataframe(rcdf.drop(columns="_g"), hide_index=True, width="stretch",
+                         column_config={"Model %": st.column_config.ProgressColumn(
+                             min_value=0, max_value=100, format="%.1f%%")})
+            lines.append("REPORT CARD (grade now | B at / A at / A+ at)")
+            for x in rc:
+                lines.append(f"  [{x['Grade now']}] {x['Market']}: {x['Pick']} ({x['Model %']:.0f}%) | "
+                             f"B {x['B at']} / A {x['A at']} / A+ {x['A+ at']}")
+            lines.append("")
+
         # Saves: every projected starter, best edge first
         sv = sorted(save_rows, key=lambda r: (M.GRADE_ORDER.get(r.get("Grade"), 9), -r.get("Edge pts", -99)))
         if sv:

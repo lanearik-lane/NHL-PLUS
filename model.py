@@ -263,3 +263,18 @@ def worth_it_price(p_model: float, min_edge: float = 0.02) -> int:
 def worth_it_label(o: int) -> str:
     """Reads naturally for both favourites and underdogs."""
     return f"{fmt_odds(o)} or better"
+
+
+GRADE_CUTS = {g: cut for g, cut in GRADE_SCALE}
+
+
+def grade_ladder(p_model: float) -> dict:
+    """Worst price that still earns each grade, e.g. {'B': -108, 'A': 105, 'A+': 120}.
+    None when the probability can't support that grade at any sane price."""
+    out = {}
+    for g in ("B", "A", "A+"):
+        if p_model - GRADE_CUTS[g] / 100 <= 0.02:
+            out[g] = None
+        else:
+            out[g] = worth_it_price(p_model, GRADE_CUTS[g] / 100)
+    return out
